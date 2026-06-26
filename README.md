@@ -1,127 +1,160 @@
-# Ghostwriter v2
+# Ghostwriter
 
-Autonomous email auto-reply for Hermes Agent. Two-job pipeline — **both no-agent scripts** — that monitors a VIP inbox, drafts replies in your voice, and sends them without lifting a finger. Zero LLM tokens when there's nothing to do.
+> Autonomous email management for Hermes Agent — multi-contact auto-reply + daily digest. **$0 idle cost.**
+
+Ghostwriter monitors your inbox, auto-replies to your inner circle in your voice, and gives you a daily digest of everything else. All three cron jobs are pure Python scripts with no LLM agent — the LLM only wakes when there's actual work.
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      GHOSTWRITER v2                      │
-│                                                          │
-│  ┌──────────┐  every 5min   ┌─────────────────────────┐ │
-│  │ Watchdog │ ─── no match ─▶│ Silent ($0)             │ │
-│  │ (script) │               └─────────────────────────┘ │
-│  │          │                                           │
-│  │          │ ─── match ───▶ /tmp/ghostwriter_output.txt│
-│  └──────────┘               └──────────┬──────────────┘ │
-│                                        │                 │
-│  ┌──────────┐  every 6min              │                 │
-│  │ Processor│ ◀────────────────────────┘                 │
-│  │ (script) │                                           │
-│  │          │ ─── no file / stale ──▶ Silent ($0)       │
-│  │          │ ─── fresh emails ─────▶ hermes chat -q    │
-│  │          │                         1. Read email     │
-│  │          │                         2. Draft reply    │
-│  │          │                         3. Send           │
-│  │          │                         4. Archive        │
-│  └──────────┘                                           │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│                   GHOSTWRITER v3                     │
+│                                                      │
+│  ┌──────────┐                                        │
+│  │   CLI    │  ghostwriter add/list/pause/digest...  │
+│  │ (Python) │  Manages ~/.ghostwriter/config.yaml    │
+│  └──────────┘                                        │
+│                                                      │
+│  ┌──────────┐  every 5min   ┌──────────────────────┐ │
+│  │ Watchdog │ ── no match ─▶│ Silent ($0)           │ │
+│  │ (script) │               └──────────────────────┘ │
+│  │          │ ── match ────▶ /tmp/trigger.json       │
+│  └──────────┘               └──────────┬───────────┘ │
+│                                        │              │
+│  ┌──────────┐  every 5min+1            │              │
+│  │ Processor│ ◀────────────────────────┘              │
+│  │ (script) │  Tier 1 → draft + send + archive       │
+│  │          │  Tier 2 → draft + notify (v4)          │
+│  └──────────┘                                        │
+│                                                      │
+│  ┌──────────┐  daily 9am                             │
+│  │  Digest  │  Tier 3 → summary + priority → TG      │
+│  │ (script) │                                        │
+│  └──────────┘                                        │
+└─────────────────────────────────────────────────────┘
 ```
 
-## The idea
+## Three tiers
 
-Hermes can already send email. But polling a Gmail inbox with an LLM agent every 5 minutes burns tokens even when there's nothing new.
-
-Ghostwriter splits the work into two scripts — neither one touches an LLM unless there's actual work. A lightweight **Watchdog** script (Python, no LLM) searches Gmail every 5 minutes. When it finds a matching email, a **Processor** script (also Python, no LLM) reads the output and spawns `hermes chat -q` to draft and send a reply. When there's nothing, both scripts exit silently — zero tokens, zero cost.
-
-**v2 improvement:** The Processor used to be an LLM agent cron job that burned ~3,500 tokens even on empty ticks (just to read the empty context and respond "."). Now it's a no-agent script — same as the Watchdog. True zero-token idle.
+| Tier | Behavior | Use case |
+|------|----------|----------|
+| **Tier 1** | Fully autonomous: draft + send, zero friction | Your inner circle |
+| **Tier 2** | Draft → notify → approve → send *(v4)* | Important contacts |
+| **Tier 3** | Never auto-reply. Daily digest with priority scoring | Strangers, cold outreach |
 
 ## Quick start
 
-### 1. Prerequisites
+### Prerequisites
 
-Hermes Agent with Google Workspace configured. Verify:
+- [Hermes Agent](https://hermes-agent.nousresearch.com) with Google Workspace configured
+- Python 3.9+ with `pyyaml`
+
+### 1. Install the CLI
+
 ```bash
-GAPI="$HOME/.hermes/hermes-agent/venv/bin/python3 $HOME/.hermes/skills/productivity/google-workspace/scripts/google_api.py"
-$GAPI gmail search "is:unread" --max 1
+cp ghostwriter ~/.local/bin/ghostwriter
+chmod +x ~/.local/bin/ghostwriter
 ```
 
-### 2. Configure your VIP
+### 2. Initialize
 
-Copy both scripts and edit them:
+```bash
+ghostwriter init
+```
+
+### 3. Add a Tier 1 contact
+
+```bash
+ghostwriter add --email friend@example.com --name friend --tier 1 --voice personal
+```
+
+### 4. Deploy the cron jobs
 
 ```bash
 cp scripts/watchdog.py ~/.hermes/scripts/ghostwriter_watchdog.py
 cp scripts/processor.py ~/.hermes/scripts/ghostwriter_processor.py
-```
+cp scripts/digest.py ~/.hermes/scripts/ghostwriter_digest.py
 
-In `ghostwriter_watchdog.py`, change the Gmail query:
-```python
-QUERY = 'from:vip@example.com is:unread'  # ← your VIP's email
-```
-
-In `ghostwriter_processor.py`, set the recipient and customize the voice:
-```python
-RECIPIENT = "person@example.com"          # ← your VIP's email
-VOICE_GUIDELINES = """..."""              # ← how replies should sound
-SIGNATURE = "<p>Cheers,</p><p>Name</p>"   # ← your name
-```
-
-### 3. Create the cron jobs
-
-```bash
-# Watchdog — zero tokens, script only
+# Watchdog — scans Gmail every 5 minutes
 hermes cron create \
   --name "Ghostwriter Watchdog" \
   --schedule "0,5,10,15,20,25,30,35,40,45,50,55 * * * *" \
   --no-agent true \
   --script "ghostwriter_watchdog.py"
 
-# Processor — zero tokens unless email found
+# Processor — drafts and sends Tier 1 replies
 hermes cron create \
   --name "Ghostwriter Processor" \
   --schedule "1,6,11,16,21,26,31,36,41,46,51,56 * * * *" \
   --no-agent true \
   --script "ghostwriter_processor.py"
+
+# Digest — daily 9am summary of non-VIP emails
+hermes cron create \
+  --name "Ghostwriter Digest" \
+  --schedule "0 9 * * *" \
+  --no-agent true \
+  --script "ghostwriter_digest.py" \
+  --deliver origin
 ```
 
-> **Why 1-minute offset?** The processor fires 1 minute after the watchdog. Using explicit cron expressions (`0,5,10...` / `1,6,11...`) guarantees they stay in lockstep.
+That's it. Your Tier 1 contacts get auto-replies in your voice. You get a digest every morning. Zero cost when nothing's happening.
 
-### 4. Done
+## CLI reference
 
-Your VIP gets auto-replies in your voice. You get silence unless something happens.
+```bash
+# Contact management
+ghostwriter add --email <e> --name <n> --tier <1|2> [--voice personal|professional]
+ghostwriter list                           # Table view
+ghostwriter show <name>                    # Full details + stats
+ghostwriter edit <name> --tier 2           # Change tier
+ghostwriter pause <name>                   # Skip in cron ticks
+ghostwriter resume <name>
+ghostwriter remove <name>
 
-## Adapting for multiple VIPs
+# Tier 3 digest
+ghostwriter digest                          # Manual trigger
+ghostwriter promote --email <e> --name <n> --tier 1  # Promote from digest
 
-Copy both scripts with new filenames, change the query and recipient, and create a second watchdog + processor cron pair. Set a different `OUTPUT_FILE` path in each pair (e.g., `/tmp/ghostwriter_investor.txt`).
+# Overview
+ghostwriter stats
+```
 
-## Cost (v2)
+## Voice presets
 
-| Pattern | Nothing happening | Per email |
-|---------|------------------|-----------|
-| Single agent polling every 5min | ~$0.30–0.50/day | ~$0.002 |
-| Ghostwriter v1 | ~$0.03/day | ~$0.002 |
-| **Ghostwriter v2** | **$0.00/day** | ~$0.002 |
+| Preset | Tone | Signature |
+|--------|------|-----------|
+| `personal` | Warm, direct, casual | `Cheers,\nName` |
+| `professional` | Polished but not stiff | `Best regards,\nName` |
 
-When there are no emails, v2 burns zero LLM tokens. The Watchdog and Processor are both pure Python scripts. The LLM only wakes when there's actual work to do.
+Custom signatures supported via `--signature`.
 
-## Voice
+## Architecture
 
-Ghostwriter drafts replies in whatever voice you specify in the processor script. The default assumes:
-- Warm, direct, concise
-- No corporate AI-isms
-- Contractions (I'll, don't)
-- Natural American English
+All three cron scripts are `no_agent=true` — **$0 LLM tokens on empty ticks**.
 
-Edit `VOICE_GUIDELINES` in `processor.py` to match your voice.
+| Script | What it does | When |
+|--------|-------------|------|
+| `watchdog.py` | Reads config, searches Gmail for Tier 1+2 emails, writes trigger file | Every 5 min |
+| `processor.py` | Reads trigger, Tier 1 → `hermes chat -q` → draft + send + archive | Every 5 min +1 |
+| `digest.py` | Excludes managed contacts, LLM batch summarizes rest, pushes to Telegram | Daily 9am |
+
+Data lives in `~/.ghostwriter/config.yaml` (source of truth) and `~/.ghostwriter/state/*.json` (per-contact stats).
+
+## What NOT to do
+
+- Don't wrap processor/digest in an LLM agent cron job — they're `no_agent=true` scripts. The $0-idle property depends on this.
+- Don't use `gmail reply` — plain text mangles in Outlook. Always `gmail send --html --thread-id`.
+- Don't combine `gmail modify` labels — one `--remove-labels` per call.
 
 ## Files
 
-| File | What |
+| File | Role |
 |------|------|
+| `ghostwriter` | CLI entry point |
+| `scripts/watchdog.py` | Multi-tenant Gmail poller |
+| `scripts/processor.py` | Tier 1 auto-reply engine |
+| `scripts/digest.py` | Tier 3 daily digest |
 | `SKILL.md` | Hermes skill definition |
-| `scripts/watchdog.py` | Watchdog script — edit the Gmail query |
-| `scripts/processor.py` | Processor script — edit voice + recipient |
-| `references/processor-prompt.md` | Reference: the voice/format guide |
-| `references/standing-rules.md` | Standing rules template |
+| `references/` | Voice templates and standing rules |
 
 ## License
 

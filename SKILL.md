@@ -1,174 +1,98 @@
 ---
 name: ghostwriter
-description: Autonomous email auto-reply pipeline — zero-token watchdog + zero-token processor. Only burns LLM tokens when there's actual email to reply to.
-version: 2.0.0
+description: Autonomous email auto-reply pipeline — multi-tenant CLI + zero-token watchdog/processor. Manages Tier 1 auto-reply and Tier 3 daily digest. Tier 2 approval deferred to v4.
+version: 3.0.0
 category: email
 ---
 
-# Ghostwriter v2
+# Ghostwriter v3
 
-Set up an autonomous email auto-reply pipeline for a VIP contact. Two-job architecture, **both no-agent scripts** — zero LLM tokens when there's nothing to do. The processor only spawns an LLM (`hermes chat -q`) when the watchdog has found fresh emails.
+Multi-tenant autonomous email management via a Python CLI (`ghostwriter`) + two-job no-agent cron pipeline. Tier 1 contacts get fully autonomous replies. Tier 3 (strangers) get a daily digest. Tier 2 (approval) is deferred to v4.
 
-## When to use
+## Quick reference: Tier model
 
-- "Set up auto-reply for [person]"
-- "I want Hermes to handle [person]'s emails automatically"
-- "Ghostwriter for [new contact]"
+| Tier | Behavior | Scope |
+|------|----------|-------|
+| Tier 1 | Auto-draft + auto-send, zero friction | Inner circle. v2 behavior, multi-contact. |
+| Tier 2 | Draft → notify → approve → send | Deferred to v4. |
+| Tier 3 | Never auto-reply. Daily digest. | Strangers, cold outreach. |
 
 ## Architecture
 
 ```
-Watchdog (no_agent, script only)
-  every 5min → searches Gmail for VIP emails → writes to /tmp/ghostwriter_output.txt
-  ├─ No match → silent exit → $0
-  └─ Match → writes email data → $0 (still no LLM!)
-
-Processor (no_agent, script only) — NEW in v2
-  every 6min, offset by 1min → reads /tmp/ghostwriter_output.txt
-  ├─ No file / stale file / no emails → silent exit → $0
-  └─ Fresh emails found → spawns `hermes chat -q` → draft + send (~8K tokens)
+~/.ghostwriter/config.yaml     ← Source of truth (CLI manages)
+        │
+        ▼
+cron: watchdog.py (every 5min, no_agent=true)
+  → Reads config.yaml
+  → Gmail search: (from:tier1_email1 OR from:tier1_email2 ...) is:unread
+  → Writes /tmp/ghostwriter_v3_trigger.json
+        │
+        ▼
+cron: processor.py (every 6min, offset +1, no_agent=true)
+  → Reads trigger file
+  → Tier 1 → spawns `hermes chat -q` → draft + send + archive
+  → Updates state/<name>.json
 ```
 
-### Why v2 changed the Processor
+Both scripts are no_agent=true — **$0 idle cost**. LLM only spawns when trigger file has emails.
 
-v1 used an LLM agent cron job with `context_from` pointing at the Watchdog. Even when there were no emails, the agent burned ~3,500 tokens just to read the empty context and respond ".".
-
-v2 makes the Processor a no-agent Python script — same pattern as the Watchdog. The script reads the Watchdog's output file. No LLM is invoked until there's actual work to do.
-
-**Token savings: ~97%.** From ~1M tokens/day wasted on empty ticks → 0 tokens when no email.
-
-## Prerequisites
-
-Google Workspace must be authenticated. Verify:
-```bash
-GAPI="$HOME/.hermes/hermes-agent/venv/bin/python3 $HOME/.hermes/skills/productivity/google-workspace/scripts/google_api.py"
-$GAPI gmail search "is:unread" --max 1
-```
-
-## Step-by-step setup
-
-### 1. Copy and configure the scripts
-
-Copy both scripts to `~/.hermes/scripts/`:
+## CLI commands
 
 ```bash
-cp scripts/watchdog.py ~/.hermes/scripts/ghostwriter_watchdog.py
-cp scripts/processor.py ~/.hermes/scripts/ghostwriter_processor.py
+ghostwriter init                           # Create ~/.ghostwriter/
+ghostwriter add --email <e> --name <n> --tier <1|2> [--voice personal|professional] [--signature "..."]
+ghostwriter list                           # Table: name, email, tier, status, voice, processed
+ghostwriter show <name>                    # Full contact details + stats
+ghostwriter edit <name> [--tier <1|2>] [--voice <preset>] [--signature "..."] [--email <e>]
+ghostwriter pause <name>                   # Skip in cron ticks
+ghostwriter resume <name>
+ghostwriter remove <name>                  # Remove contact + state
+ghostwriter stats                          # Overview
+ghostwriter digest                         # Manual Tier 3 trigger (Phase 2)
 ```
 
-Edit `~/.hermes/scripts/ghostwriter_watchdog.py`:
-```python
-QUERY = 'from:vip@example.com is:unread'  # ← change to your VIP
-```
+CLI is installed at `~/.local/bin/ghostwriter`.
 
-Edit `~/.hermes/scripts/ghostwriter_processor.py`:
-```python
-RECIPIENT = "person@example.com"          # ← change to your VIP's email
-VOICE_GUIDELINES = """..."""              # ← customize the reply voice
-SIGNATURE = "<p>Cheers,</p><p>Name</p>"   # ← your name
-```
+## Voice presets
 
-### 2. Create the cron jobs
+| Preset | Signature | Use case |
+|--------|-----------|----------|
+| `personal` | `<p>Cheers,</p><p>Name</p>` | Inner circle, warm, casual |
+| `professional` | `<p>Best regards,</p><p>Name</p>` | Colleagues, investors |
 
-```bash
-# Watchdog — zero tokens, script only
-hermes cron create \
-  --name "Ghostwriter Watchdog" \
-  --schedule "0,5,10,15,20,25,30,35,40,45,50,55 * * * *" \
-  --no-agent true \
-  --script "ghostwriter_watchdog.py"
+Custom signatures supported via `--signature` on `add` or `edit`.
 
-# Processor — zero tokens unless email found (NEW in v2)
-hermes cron create \
-  --name "Ghostwriter Processor" \
-  --schedule "1,6,11,16,21,26,31,36,41,46,51,56 * * * *" \
-  --no-agent true \
-  --script "ghostwriter_processor.py"
-```
+## Cron jobs (v3)
 
-> The processor fires 1 minute after the watchdog. Using explicit cron expressions guarantees they stay synchronized — `every 5m`/`every 6m` can drift apart.
+| Job | Schedule | Script |
+|-----|----------|--------|
+| Ghostwriter v3 Watchdog (`3c51678f31cb`) | Every 5min (0,5,10...) | `ghostwriter_v3_watchdog.py` |
+| Ghostwriter v3 Processor (`fddc50ba1109`) | Every 5min +1 (1,6,11...) | `ghostwriter_v3_processor.py` |
 
-### 3. Add standing rules (optional)
-
-If using the `email-hq` skill, add the contact to standing rules:
-
-```markdown
-- **Name** (`email@domain.com`): Full autonomy — read, draft reply in user's voice, SEND directly. No preview. Never archive, never ignore.
-```
-
-## How the scripts work
-
-### Watchdog (`watchdog.py`)
-
-- **No matching emails:** Silent exit (exit 0, no stdout) → cron records nothing → $0
-- **Matching emails found:** Fetches full content, writes to `/tmp/ghostwriter_output.txt` AND stdout — both paths so cron has a log AND processor has structured data
-- **API errors:** Outputs error message, exits gracefully
-
-### Processor (`processor.py`)
-
-- **No /tmp/ghostwriter_output.txt:** Silent exit → $0
-- **File older than 10 minutes:** Stale data → silent exit (already processed) → $0
-- **File exists, fresh, but no "--- VIP EMAIL ---" block:** Silent exit → $0
-- **Fresh VIP emails found:** Spawns `hermes chat -q` with full email context + voice guidelines → drafts reply → sends → archives → ~8K tokens
-
-## Reply conventions
-
-- Use `gmail send --html --thread-id` (NOT `gmail reply` — plain text gets mangled in Outlook)
-- Mark original as read, then archive (two separate `gmail modify` calls — one label per invocation)
-- Sign every reply with appropriate valediction
-
-## Pitfalls
-
-### `gmail modify` takes ONE label at a time
-```bash
-# Wrong — only the last --remove-labels takes effect:
-$GAPI gmail modify ID --remove-labels UNREAD --remove-labels INBOX
-
-# Correct — two separate calls:
-$GAPI gmail modify ID --remove-labels UNREAD
-$GAPI gmail modify ID --remove-labels INBOX
-```
-
-### Use `gmail send --html`, never `gmail reply`
-`gmail reply` sends plain text that Outlook mangles. Always:
-```bash
-$GAPI gmail send --to "person@email.com" --subject "Re: Original" \
-  --body "<p>Reply text.</p><p>Cheers,</p><p>Name</p>" --html --thread-id "<threadId>"
-```
-
-### Watchdog ThreadID output
-The watchdog script outputs `ThreadID` — the processor needs it for `--thread-id` to maintain proper email threading.
-
-### Watchdog + Processor timing
-Use explicit cron expressions with a fixed 1-minute offset:
-- Watchdog: `0,5,10,15,...`
-- Processor: `1,6,11,16,...`
-
-## Multiple VIPs
-
-Duplicate BOTH scripts with different filenames and queries. Each VIP needs their own watchdog + processor pair with a unique output file (edit `OUTPUT_FILE` in both scripts).
-
-## Cost (v2)
-
-| Pattern | No-match cost/day | Per email |
-|---------|------------------|-----------|
-| Single agent polling every 5min | ~$0.30–0.50 | ~$0.002 |
-| Ghostwriter v1 (LLM processor) | ~$0.03 | ~$0.002 |
-| **Ghostwriter v2 (script processor)** | **~$0.00** | ~$0.002 |
-
-When there are no emails, v2 burns zero LLM tokens — both Watchdog and Processor are pure Python. The LLM only wakes when there's actual work.
+v2 jobs (`Kelly Watchdog` ... and `Kelly Processor` ...) are **paused** — v3 handles the same contacts.
 
 ## Files
 
-| File | What |
+| File | Role |
 |------|------|
-| `scripts/watchdog.py` | Watchdog script — edit Gmail query |
-| `scripts/processor.py` | Processor script — edit voice + recipient |
-| `references/processor-prompt.md` | Reference: the voice/format guide (used inline in processor.py) |
+| `~/.local/bin/ghostwriter` | CLI entry point |
+| `scripts/watchdog.py` | Multi-tenant Gmail poller |
+| `scripts/processor.py` | Tier 1 auto-reply engine |
+| `references/processor-prompt.md` | Legacy voice reference (v2) |
 | `references/standing-rules.md` | Standing rules template |
+
+## Pitfalls
+
+- **`gmail modify` takes ONE label per call** — use two separate invocations for UNREAD + INBOX
+- **Use `gmail send --html`, never `gmail reply`** — plain text gets mangled in Outlook
+- **Don't wrap processor or watchdog in LLM agent cron jobs** — they must be `no_agent=true` to preserve $0 idle
+- **Don't make Tier 2 auto-send** — approval must be explicit (deferred to v4)
 
 ## Changelog
 
-**v2.0.0** — Processor changed from LLM agent (context_from) to no-agent script. Eliminates ~3,500 token burn per empty tick. ~97% token reduction on idle days.
+**v3.0.0** — Multi-tenant CLI (`ghostwriter`). Config-driven watchdog + processor reading from `~/.ghostwriter/config.yaml`. Tier model: Tier 1 auto-reply, Tier 2 deferred, Tier 3 digest (Phase 2).
+
+**v2.0.0** — Processor changed from LLM agent to no-agent script. ~97% token reduction on idle days.
 
 **v1.0.0** — Initial release. Two-job architecture: no-agent watchdog + LLM agent processor.

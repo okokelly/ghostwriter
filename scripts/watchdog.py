@@ -1,66 +1,133 @@
 #!/usr/bin/env python3
 """
-Ghostwriter Watchdog — checks Gmail for VIP emails.
-Writes output to /tmp/ghostwriter_output.txt AND stdout when emails found.
-Zero-token on no-match (silent exit).
+Ghostwriter v3 Watchdog — multi-tenant email polling.
+Reads ~/.ghostwriter/config.yaml, searches Gmail for all Tier 1 contacts,
+writes trigger file when unread emails found.
 
-To adapt for your VIP: change the QUERY variable below.
+Zero-token: no_agent=true cron job. Pure Python, no LLM.
+v3: multi-contact from config.yaml (replaces v2's single VIP hardcode).
 """
 
-import subprocess, json, sys, os
+import json
+import os
+import subprocess
+import sys
+import yaml
 from datetime import datetime, timezone
+from pathlib import Path
 
-# ── CONFIGURE THIS ──────────────────────────────────
-QUERY = 'from:vip@example.com is:unread'
-# ────────────────────────────────────────────────────
+# ── Paths ─────────────────────────────────────────────────
+GHOSTWRITER_HOME = Path.home() / ".ghostwriter"
+CONFIG_PATH = GHOSTWRITER_HOME / "config.yaml"
+TRIGGER_FILE = Path("/tmp/ghostwriter_v3_trigger.json")
 
-OUTPUT_FILE = "/tmp/ghostwriter_output.txt"
-GAPI = f"{os.path.expanduser('~')}/.hermes/hermes-agent/venv/bin/python3"
-GAPI += " " + os.path.expanduser('~') + "/.hermes/skills/productivity/google-workspace/scripts/google_api.py"
+GAPI = " ".join([
+    str(Path.home() / ".hermes/hermes-agent/venv/bin/python3"),
+    str(Path.home() / ".hermes/skills/productivity/google-workspace/scripts/google_api.py"),
+])
 
-result = subprocess.run(
-    f'{GAPI} gmail search "{QUERY}" --max 5',
-    shell=True, capture_output=True, text=True, timeout=15
-)
+MAX_EMAILS_PER_CONTACT = 5  # Fetch up to 5 unread per contact per tick
 
-if result.returncode != 0:
-    print(f"ERROR: Gmail search failed: {result.stderr}")
-    sys.exit(0)
 
-try:
-    emails = json.loads(result.stdout)
-except json.JSONDecodeError:
-    sys.exit(0)  # Silent — no matching emails
+def load_config():
+    """Load config.yaml. Exit if not found or no Tier 1 contacts."""
+    if not CONFIG_PATH.exists():
+        sys.exit(0)  # Not initialized yet — silent
 
-if not emails or (isinstance(emails, dict) and not emails):
-    sys.exit(0)  # Silent — no matching emails
+    with open(CONFIG_PATH) as f:
+        config = yaml.safe_load(f) or {}
 
-# Found emails — fetch full content, write to output file AND stdout
-output_lines = [f"# Ghostwriter Watchdog Output — {datetime.now(timezone.utc).isoformat()}"]
-for email in emails:
-    r = subprocess.run(
-        f'{GAPI} gmail get {email["id"]}',
-        shell=True, capture_output=True, text=True, timeout=15
+    contacts = config.get("contacts", [])
+    # Only Tier 1 + not paused
+    active = [c for c in contacts if c.get("tier") == 1 and not c.get("paused")]
+
+    if not active:
+        sys.exit(0)  # No Tier 1 contacts — silent
+
+    return active
+
+
+def search_gmail(email):
+    """Search for unread emails from a specific address. Returns list of message objects."""
+    query = f"from:{email} is:unread"
+    result = subprocess.run(
+        f'{GAPI} gmail search "{query}" --max {MAX_EMAILS_PER_CONTACT}',
+        shell=True, capture_output=True, text=True, timeout=20,
     )
-    if r.returncode == 0:
-        try:
-            full = json.loads(r.stdout)
-            output_lines.append("--- VIP EMAIL ---")
-            output_lines.append(f"ID: {full.get('id')}")
-            output_lines.append(f"Subject: {full.get('subject')}")
-            output_lines.append(f"Date: {full.get('date')}")
-            output_lines.append(f"From: {full.get('from')}")
-            output_lines.append(f"ThreadID: {full.get('threadId')}")
-            output_lines.append(f"Body: {full.get('body', '')}")
-            output_lines.append("--- END ---")
-        except json.JSONDecodeError:
-            output_lines.append(f"VIP EMAIL — ID: {email['id']} — Subject: {email.get('subject', 'unknown')}")
+    if result.returncode != 0:
+        print(f"WARNING: Gmail search failed for {email}: {result.stderr}", file=sys.stderr)
+        return []
 
-output_text = "\n".join(output_lines)
+    try:
+        return json.loads(result.stdout) or []
+    except json.JSONDecodeError:
+        return []  # No results or non-JSON response
 
-# Write to temp file for processor
-with open(OUTPUT_FILE, "w") as f:
-    f.write(output_text)
 
-# Also write to stdout (for cron logging)
-print(output_text)
+def fetch_full(email_id):
+    """Fetch full email content by ID. Returns dict or None."""
+    result = subprocess.run(
+        f'{GAPI} gmail get {email_id}',
+        shell=True, capture_output=True, text=True, timeout=20,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+
+def main():
+    contacts = load_config()
+
+    all_emails = []
+    for contact in contacts:
+        emails = search_gmail(contact["email"])
+        for email in emails:
+            full = fetch_full(email["id"])
+            if full:
+                all_emails.append({
+                    "id": full.get("id"),
+                    "subject": full.get("subject", "(no subject)"),
+                    "date": full.get("date", ""),
+                    "from": full.get("from", ""),
+                    "body": full.get("body", ""),
+                    "thread_id": full.get("threadId", ""),
+                    "contact_name": contact["name"],
+                    "contact_email": contact["email"],
+                    "tier": contact["tier"],
+                    "voice_guidelines": contact.get("voice_guidelines", ""),
+                    "signature": contact.get("signature", "<p>Cheers,</p><p>Name</p>"),
+                })
+            else:
+                # Partial info — at least record we saw it
+                all_emails.append({
+                    "id": email.get("id", ""),
+                    "subject": email.get("subject", "(no subject)"),
+                    "from": email.get("from", ""),
+                    "contact_name": contact["name"],
+                    "contact_email": contact["email"],
+                    "tier": contact["tier"],
+                    "voice_guidelines": contact.get("voice_guidelines", ""),
+                    "signature": contact.get("signature", "<p>Cheers,</p><p>Name</p>"),
+                })
+
+    if not all_emails:
+        sys.exit(0)  # No emails — silent, zero cost
+
+    # Write trigger file for processor
+    trigger = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "emails": all_emails,
+    }
+
+    with open(TRIGGER_FILE, "w") as f:
+        json.dump(trigger, f, indent=2)
+
+    # Also dump to stdout for cron logging
+    print(json.dumps(trigger, indent=2))
+
+
+if __name__ == "__main__":
+    main()
