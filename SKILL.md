@@ -67,10 +67,10 @@ Custom signatures supported via `--signature` on `add` or `edit`.
 
 | Job | Schedule | Script |
 |-----|----------|--------|
-| Ghostwriter v3 Watchdog (`3c51678f31cb`) | Every 5min (0,5,10...) | `ghostwriter_v3_watchdog.py` |
-| Ghostwriter v3 Processor (`fddc50ba1109`) | Every 5min +1 (1,6,11...) | `ghostwriter_v3_processor.py` |
+| Ghostwriter v3 Watchdog | Every 5min (0,5,10...) | `ghostwriter_v3_watchdog.py` |
+| Ghostwriter v3 Processor | Every 5min +1 (1,6,11...) | `ghostwriter_v3_processor.py` |
 
-v2 jobs (`Kelly Watchdog` ... and `Kelly Processor` ...) are **paused** — v3 handles the same contacts.
+v2 jobs (the original single-VIP watchdog + processor) are **paused** — v3 handles the same contacts.
 
 ## Files
 
