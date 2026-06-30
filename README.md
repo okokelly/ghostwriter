@@ -1,6 +1,6 @@
 # Ghostwriter
 
-Autonomous email management for [Hermes Agent](https://github.com). Two things,
+Autonomous email management for Hermes Agent. Two things,
 both running as **no-agent cron scripts** so they cost **zero LLM tokens when idle**:
 
 1. **Tier 1 — auto-reply.** Unread mail from *you* (your own address, configured
@@ -38,12 +38,22 @@ Digest (daily, no LLM until work exists)
   where a reply goes.
 - **Email bodies are treated as untrusted data.** The drafting prompt explicitly
   tells the model not to act on instructions found inside an email.
-- **No double-send on crash.** The trigger is claimed (renamed) before the LLM
-  runs, and a `flock` lock prevents overlapping ticks. An email that genuinely
-  fails to send stays unread, so a later tick retries it.
+- **No double-send.** Three layers: a `flock` lock prevents overlapping ticks;
+  the trigger is claimed (renamed) before the LLM runs so a crash can't leave it
+  to be reprocessed; and every successful reply records its message-id in
+  `~/.ghostwriter/state/sent_ids.json`, so even a message that gets re-listed
+  while an earlier draft is still running is never replied to twice. An email
+  that genuinely fails to send is *not* recorded, so a later tick retries it.
 - **No Tier 2.** A "draft → approve → send to third parties" tier was
   intentionally not built — locked-to-self delivery already gives the same
   human-in-the-loop for free (you forward third-party replies yourself).
+
+> **Prerequisite: run the agent under a Gmail account that is _not_ your Tier 1
+> address.** The watchdog triggers on unread mail *from* your configured address
+> and the processor replies *to* it. If the agent's mailbox and your Tier 1
+> address are the same account, each reply would re-trigger the watchdog — a
+> reply loop. Keep them separate (you forward chains from your address into the
+> agent's mailbox).
 
 ## Quick start
 

@@ -10,9 +10,9 @@ contacts:
   - name: me
     email: you@example.com
     tier: 1
-    voice: personal
     # HTML signature appended to every reply. Leave blank for "<p>Cheers,</p>".
     signature: "<p>Cheers,</p><p>Your Name</p>"
+    # Free-text voice description handed to the model when drafting.
     voice_guidelines: "Warm, direct, concise. No AI-isms. Contractions OK."
     paused: false
 

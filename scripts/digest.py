@@ -21,10 +21,11 @@ GHOSTWRITER_HOME = Path.home() / ".ghostwriter"
 CONFIG_PATH = GHOSTWRITER_HOME / "config.yaml"
 
 HERMES_HOME = Path.home() / ".hermes"
-GAPI = " ".join([
+# List form (no shell=True): args passed as argv, never reinterpreted by a shell.
+GAPI = [
     str(HERMES_HOME / "hermes-agent/venv/bin/python3"),
     str(HERMES_HOME / "skills/productivity/google-workspace/scripts/google_api.py"),
-])
+]
 
 MAX_EMAILS = 30  # Max emails to include in a digest batch
 
@@ -59,8 +60,8 @@ def build_query(excluded):
 def search_strangers(query):
     """Search Gmail for unread emails not from managed contacts."""
     result = subprocess.run(
-        f'{GAPI} gmail search "{query}" --max {MAX_EMAILS}',
-        shell=True, capture_output=True, text=True, timeout=30,
+        GAPI + ["gmail", "search", query, "--max", str(MAX_EMAILS)],
+        capture_output=True, text=True, timeout=30,
     )
     if result.returncode != 0:
         print(f"ERROR: Gmail search failed: {result.stderr}", file=sys.stderr)
@@ -75,8 +76,8 @@ def search_strangers(query):
 def fetch_snippet(email_id):
     """Fetch email subject + first 600 chars of body."""
     result = subprocess.run(
-        f'{GAPI} gmail get {email_id}',
-        shell=True, capture_output=True, text=True, timeout=20,
+        GAPI + ["gmail", "get", email_id],
+        capture_output=True, text=True, timeout=20,
     )
     if result.returncode != 0:
         return {"subject": "(unknown)", "from": "(unknown)", "snippet": ""}
@@ -130,7 +131,7 @@ def build_digest_prompt(emails_data):
     sections.append("   - Use emoji for priority (🟢🟡🔴) but keep it clean")
     sections.append("   - Use `---` to separate senders")
     sections.append("")
-    sections.append("4. At the bottom, note: \"Reply to any? `ghostwriter promote --email <email> --name <name> --tier 1` to add them.\"")
+    sections.append("4. At the bottom, note: \"Want any of these auto-handled? Add the sender to ~/.ghostwriter/config.yaml as a Tier 1 contact.\"")
     sections.append("")
     sections.append("Output the digest now. Be concise — this is a morning scan, not a deep read.")
     sections.append("")

@@ -1,7 +1,7 @@
 ---
 name: ghostwriter
 description: Autonomous email management — zero-token watchdog/processor/digest cron pipeline. Tier 1 auto-replies to your own configured address (recipient locked); Tier 3 gives a daily digest of everyone else.
-version: 4.0.0
+version: 4.0.1
 category: email
 ---
 
@@ -65,14 +65,15 @@ contacts:
     paused: false
 ```
 
-## Voice presets
+## Voice & signature
 
-| Preset | Signature (set yours in config) | Use case |
-|--------|----------------------------------|----------|
-| `personal` | `<p>Cheers,</p>` | Warm, casual |
-| `professional` | `<p>Best regards,</p>` | Polished |
+Two per-contact fields in `config.yaml` shape a reply (both optional — generic
+defaults apply if omitted):
 
-Signatures and voice are per-contact in `config.yaml`; the defaults are generic.
+| Field | Role | Example |
+|-------|------|---------|
+| `voice_guidelines` | Free text handed to the model when drafting | `Warm, direct, concise. No AI-isms.` |
+| `signature` | HTML appended verbatim after the drafted body | `<p>Cheers,</p>` |
 
 ## Cron jobs
 
@@ -99,6 +100,14 @@ digest. All exit silently with zero tokens when there is nothing to do.
 - **Deploy `send_email.py` alongside `processor.py`** — the processor imports it.
 
 ## Changelog
+
+**v4.0.1** — Closed the re-enqueue double-reply window with message-id dedup
+(`state/sent_ids.json`), recorded the instant a send succeeds. Watchdog/digest
+Gmail calls converted to list-form `subprocess` (no `shell=True`). Digest no
+longer references the removed `ghostwriter promote` CLI — it points users to
+`config.yaml`. Documented the "agent mailbox ≠ Tier 1 address" prerequisite.
+Dropped the unused `voice:` config field. Empty-body / duplicate messages no
+longer inflate `total_failed`.
 
 **v4.0.0** — LLM now drafts only; Python performs the send to the address in
 `config.yaml` (recipient locked — no email body can redirect it). Added

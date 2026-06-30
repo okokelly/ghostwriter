@@ -21,10 +21,12 @@ GHOSTWRITER_HOME = Path.home() / ".ghostwriter"
 CONFIG_PATH = GHOSTWRITER_HOME / "config.yaml"
 TRIGGER_FILE = Path("/tmp/ghostwriter_v4_trigger.json")
 
-GAPI = " ".join([
+# List form (no shell=True): args are passed as argv, never reinterpreted by a
+# shell — same hardening as send_email.py.
+GAPI = [
     str(Path.home() / ".hermes/hermes-agent/venv/bin/python3"),
     str(Path.home() / ".hermes/skills/productivity/google-workspace/scripts/google_api.py"),
-])
+]
 
 MAX_EMAILS_PER_CONTACT = 5  # Fetch up to 5 unread per contact per tick
 
@@ -51,8 +53,8 @@ def search_gmail(email):
     """Search for unread emails from a specific address. Returns list of message objects."""
     query = f"from:{email} is:unread"
     result = subprocess.run(
-        f'{GAPI} gmail search "{query}" --max {MAX_EMAILS_PER_CONTACT}',
-        shell=True, capture_output=True, text=True, timeout=20,
+        GAPI + ["gmail", "search", query, "--max", str(MAX_EMAILS_PER_CONTACT)],
+        capture_output=True, text=True, timeout=20,
     )
     if result.returncode != 0:
         print(f"WARNING: Gmail search failed for {email}: {result.stderr}", file=sys.stderr)
@@ -67,8 +69,8 @@ def search_gmail(email):
 def fetch_full(email_id):
     """Fetch full email content by ID. Returns dict or None."""
     result = subprocess.run(
-        f'{GAPI} gmail get {email_id}',
-        shell=True, capture_output=True, text=True, timeout=20,
+        GAPI + ["gmail", "get", email_id],
+        capture_output=True, text=True, timeout=20,
     )
     if result.returncode != 0:
         return None
