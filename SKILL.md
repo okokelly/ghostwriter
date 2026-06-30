@@ -1,7 +1,7 @@
 ---
 name: ghostwriter
-description: Autonomous email management — zero-token watchdog/processor/digest cron pipeline. Tier 1 auto-replies to your own configured address (recipient locked); Tier 3 gives a daily digest of everyone else.
-version: 4.2.0
+description: Autonomous email management — zero-token watchdog/processor/digest cron pipeline. Tier 1 auto-replies to your own configured address (recipient locked); Tier 2 gives a daily digest of everyone else.
+version: 4.2.1
 category: email
 ---
 
@@ -9,21 +9,23 @@ category: email
 
 Autonomous email management via a no-agent cron pipeline reading from
 `~/.ghostwriter/config.yaml`. Tier 1 mail gets an auto-drafted reply sent back to
-your own configured address; Tier 3 (everyone else) gets a daily digest. The LLM
+your own configured address; Tier 2 (everyone else) gets a daily digest. The LLM
 only runs when there is real work — **$0 idle cost**.
 
 ## Tier model
 
+Two tiers. The only thing you configure is `tier: 1`; anything not listed is
+Tier 2 by default.
+
 | Tier | Behavior | Scope |
 |------|----------|-------|
 | Tier 1 | Auto-draft a reply; Python sends it to your configured address | You. Your own mail + chains you forward to the agent. |
-| Tier 3 | Never auto-reply. Rolled into a daily digest. | Everyone not configured (newsletters, cold outreach). |
+| Tier 2 | Never auto-reply. Rolled into a daily digest. | Everyone not configured (newsletters, cold outreach). |
 
-There is no Tier 2. "Draft → approve → send to a third party" was intentionally
-not built: because every reply is sent only to your own address, a reply to a
-forwarded chain lands in your inbox for you to forward onward — the same
-human-in-the-loop, with no approval machinery and no risk of the model emailing
-the wrong person.
+v1–v3 had a third "draft → approve → send to a third party" tier; v4 dropped it.
+Because every reply is sent only to your own address, a reply to a forwarded
+chain lands in your inbox for you to forward onward — the same human-in-the-loop,
+with no approval machinery and no risk of the model emailing the wrong person.
 
 ## Architecture
 
@@ -88,7 +90,7 @@ digest. All exit silently with zero tokens when there is nothing to do.
 | `scripts/watchdog.py` | Gmail poller → atomic trigger write |
 | `scripts/processor.py` | Drafts via LLM, sends via Python to the config address |
 | `scripts/send_email.py` | Shared Gmail send / archive helper (locked recipient) |
-| `scripts/digest.py` | Daily Tier 3 digest |
+| `scripts/digest.py` | Daily Tier 2 digest |
 | `ghostwriter` | CLI: `status` + contact management (`add`/`edit`/`remove`/`promote`) |
 | `config.example.yaml` | Config template |
 | `references/` | Voice / format reference notes |
@@ -119,6 +121,11 @@ auto-sent to the contact's own address.
 
 ## Changelog
 
+**v4.2.1** — Docs: renumbered the digest from "Tier 3" to **Tier 2** so the
+model reads as the two tiers it actually is (the v1–v3 middle tier is gone).
+README polished throughout. Behaviour unchanged — `tier: 1` is still the only
+configured value.
+
 **v4.2.0** — CLI gained contact management: `add`, `edit`, `remove`, `promote`
 (atomic config writes; `add`/`promote`/`remove` confirm first). Supports
 managing several of your own addresses as separate Tier 1 contacts. Digest
@@ -137,12 +144,15 @@ longer inflate `total_failed`.
 
 **v4.0.0** — LLM now drafts only; Python performs the send to the address in
 `config.yaml` (recipient locked — no email body can redirect it). Added
-`send_email.py`. Email bodies treated as untrusted. Removed Tier 2. Hardening:
+`send_email.py`. Email bodies treated as untrusted. Dropped the middle
+"draft → approve → third party" tier, leaving two: auto-reply (Tier 1) and
+digest (Tier 2). Hardening:
 `flock` single-instance lock, claim-trigger-before-spawn (no double-send),
 atomic trigger write, real send/fail state, sentinel-based digest parsing.
 
 **v3.0.0** — Config-driven multi-tenant watchdog + processor reading from
-`~/.ghostwriter/config.yaml`. Tier 1 auto-reply + Tier 3 digest.
+`~/.ghostwriter/config.yaml`. Tier 1 auto-reply + a daily digest (then numbered
+Tier 3, renumbered to Tier 2 in v4 when the middle tier was dropped).
 
 **v2.0.0** — Processor changed from LLM agent to no-agent script (~97% idle token reduction).
 

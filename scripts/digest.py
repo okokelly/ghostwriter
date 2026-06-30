@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Ghostwriter v4 Digest — Tier 3 daily digest of non-VIP emails.
-Searches Gmail for unread emails NOT from Tier 1/2 contacts,
-batches them to LLM for summary + priority scoring,
-delivers formatted digest to Telegram.
+Ghostwriter v4 Digest — Tier 2 daily digest of non-VIP emails.
+Searches Gmail for unread emails NOT from Tier 1 contacts (everyone unmanaged is
+Tier 2), batches them to the LLM for summary + priority scoring, delivers the
+formatted digest to Telegram.
 
 Zero-token on empty days. no_agent=true cron job.
 """
@@ -45,7 +45,7 @@ def load_excluded_emails():
 
     contacts = config.get("contacts", [])
     # Exclude managed (Tier 1) contacts so the user's own / forwarded mail
-    # doesn't show up in the stranger digest. (Tier 2 was removed.)
+    # doesn't show up in the stranger digest. Everything else is Tier 2.
     return {c["email"].lower() for c in contacts if c.get("tier") == 1}
 
 

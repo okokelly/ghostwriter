@@ -126,8 +126,8 @@ def cmd_status(args):
 
 def cmd_add(args):
     if args.tier != 1:
-        sys.exit("ghostwriter: only Tier 1 is managed in v4 — Tier 3 strangers "
-                 "are handled implicitly by the daily digest, with no entry.")
+        sys.exit("ghostwriter: only Tier 1 is managed — everything else is Tier 2 "
+                 "(strangers), handled implicitly by the daily digest, with no entry.")
 
     config = load_config()
     if find_contact(config, args.name)[1]:

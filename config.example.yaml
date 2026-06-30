@@ -16,6 +16,6 @@ contacts:
     voice_guidelines: "Warm, direct, concise. No AI-isms. Contractions OK."
     paused: false
 
-# Everything NOT listed above is treated as a "stranger" and rolled up into the
-# daily Tier 3 digest (newsletters, cold outreach, etc.) — you don't add those
+# Everything NOT listed above is Tier 2: treated as a "stranger" and rolled up
+# into the daily digest (newsletters, cold outreach, etc.) — you don't add those
 # anywhere; leaving them unmanaged is what puts them in the digest.

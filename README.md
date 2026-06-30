@@ -1,29 +1,35 @@
 # Ghostwriter
 
-Autonomous email management for Hermes Agent. Two things,
-both running as **no-agent cron scripts** so they cost **zero LLM tokens when idle**:
+Autonomous email management for Hermes Agent, running as **no-agent cron
+scripts** so it costs **zero LLM tokens when idle**. It sorts your inbox into
+two tiers:
 
-1. **Tier 1 — auto-reply.** Unread mail from *you* (your own address, configured
-   in `config.yaml`) gets a reply drafted in your voice and sent automatically.
-   The reply is **always sent back to your own configured address** — never to an
-   address picked by the model — so it's safe to forward third-party chains to
-   the agent: the draft lands in *your* inbox for you to forward onward.
-2. **Tier 3 — daily digest.** Everything else (newsletters, cold outreach) is
-   rolled up into one daily summary with priority scoring, delivered to your
-   chat. Your inbox stays quiet.
+1. **Tier 1 — auto-reply.** Unread mail from an address you manage (listed in
+   `config.yaml`) gets a reply drafted in your voice and **sent automatically
+   back to that same address** — never to an address chosen by the model. So
+   it's safe to forward a third-party chain to the agent: the draft lands in
+   *your* inbox for you to forward onward.
+2. **Tier 2 — daily digest.** Everything else — newsletters, cold outreach,
+   anyone not in your config — is rolled into one daily summary with priority
+   scoring, delivered to your chat. Nothing to configure: if it isn't Tier 1,
+   it's Tier 2, and your inbox stays quiet.
 
-The LLM only wakes when there's actual work. Empty inbox = both scripts exit
+> Earlier versions (v1–v3) had a middle "draft → approve → send to a third
+> party" tier. v4 dropped it (see *Design notes*), which is why the model is now
+> just these two.
+
+The LLM only wakes when there's real work. Empty inbox = every script exits
 silently, no tokens spent.
 
 ```
 Watchdog (every 5 min, no LLM)
-  └─ searches Gmail for unread mail from your Tier 1 address
+  └─ searches Gmail for unread mail from your Tier 1 addresses
   └─ writes /tmp/ghostwriter_v4_trigger.json  (atomic)        ── nothing? exit silently
 
 Processor (every 5 min, +1 offset, no LLM until work exists)
   └─ claims the trigger (rename-before-spawn → no double-send)
   └─ for each email:  LLM drafts the reply BODY only
-                      Python appends signature + SENDS to the config address
+                      Python appends the signature + SENDS to the config address
                       Python archives the original, records the real result
 
 Digest (daily, no LLM until work exists)
@@ -39,21 +45,22 @@ Digest (daily, no LLM until work exists)
 - **Email bodies are treated as untrusted data.** The drafting prompt explicitly
   tells the model not to act on instructions found inside an email.
 - **No double-send.** Three layers: a `flock` lock prevents overlapping ticks;
-  the trigger is claimed (renamed) before the LLM runs so a crash can't leave it
-  to be reprocessed; and every successful reply records its message-id in
-  `~/.ghostwriter/state/sent_ids.json`, so even a message that gets re-listed
-  while an earlier draft is still running is never replied to twice. An email
-  that genuinely fails to send is *not* recorded, so a later tick retries it.
-- **No Tier 2.** A "draft → approve → send to third parties" tier was
-  intentionally not built — locked-to-self delivery already gives the same
-  human-in-the-loop for free (you forward third-party replies yourself).
+  the trigger is claimed (renamed) before the LLM runs, so a crash can't leave
+  it to be reprocessed; and every successful reply records its message-id in
+  `~/.ghostwriter/state/sent_ids.json`, so a message that gets re-listed while an
+  earlier draft is still running is never replied to twice. A reply that
+  genuinely fails to send is *not* recorded, so a later tick retries it.
+- **No "approve and send to a third party" tier.** That middle tier was
+  intentionally dropped — locked-to-self delivery gives the same
+  human-in-the-loop for free: a reply to a forwarded chain lands in *your* inbox,
+  and you forward it onward yourself. No approval machinery, no risk of the model
+  emailing the wrong person.
 
-> **Prerequisite: run the agent under a Gmail account that is _not_ your Tier 1
-> address.** The watchdog triggers on unread mail *from* your configured address
-> and the processor replies *to* it. If the agent's mailbox and your Tier 1
-> address are the same account, each reply would re-trigger the watchdog — a
-> reply loop. Keep them separate (you forward chains from your address into the
-> agent's mailbox).
+> **Prerequisite: run the agent under a Gmail account that is _not_ one of your
+> Tier 1 addresses.** The watchdog triggers on unread mail *from* a configured
+> address and the processor replies *to* it. If the agent's mailbox is itself a
+> Tier 1 address, each reply would re-trigger the watchdog — a reply loop. Keep
+> them separate (you forward chains from your addresses into the agent's mailbox).
 
 ## Quick start
 
@@ -66,18 +73,19 @@ GAPI="$HOME/.hermes/hermes-agent/venv/bin/python3 $HOME/.hermes/skills/productiv
 $GAPI gmail search "is:unread" --max 1
 ```
 
-### 2. Configure yourself
+### 2. Configure your addresses
 
-Copy the template and fill in **your own** address:
+Copy the template and fill in **your own** address(es):
 
 ```bash
 mkdir -p ~/.ghostwriter
 cp config.example.yaml ~/.ghostwriter/config.yaml
-$EDITOR ~/.ghostwriter/config.yaml
+$EDITOR ~/.ghostwriter/config.yaml      # or use the CLI — see below
 ```
 
-Your real `config.yaml` holds your address and is gitignored — never commit it.
-See `config.example.yaml` for every field.
+Your real `config.yaml` holds your addresses and is gitignored — never commit
+it. See `config.example.yaml` for every field. List one `tier: 1` entry per
+mailbox you want auto-replied; anything not listed is Tier 2 (digest).
 
 ### 3. Deploy the scripts
 
@@ -118,8 +126,8 @@ hermes cron create --name "Ghostwriter v4 Digest" \
 | `scripts/watchdog.py`   | Polls Gmail for Tier 1 unread mail, writes the trigger |
 | `scripts/processor.py`  | LLM drafts the reply; Python sends to the config address + archives |
 | `scripts/send_email.py` | Shared Gmail send / archive helper (locked recipient) |
-| `scripts/digest.py`     | Daily Tier 3 digest of unmanaged senders |
-| `ghostwriter`           | Read-only CLI (`status`) — see below |
+| `scripts/digest.py`     | Daily Tier 2 digest of unmanaged senders |
+| `ghostwriter`           | CLI — `status` + contact management (see below) |
 | `config.example.yaml`   | Config template — copy to `~/.ghostwriter/config.yaml` |
 | `SKILL.md`              | Hermes skill definition |
 | `references/`           | Voice / format reference notes |

@@ -9,7 +9,7 @@ This locks the send target to the user's own configured address, so nothing in
 an email body (e.g. a forwarded chain saying "send this to bob@x.com") can
 redirect where a reply goes.
 
-Tier 2 (draft -> approve -> send to third parties) is intentionally not built.
+A "draft -> approve -> send to a third party" tier is intentionally not built.
 Locked-to-self delivery gives the same human-in-the-loop for free: a reply to a
 forwarded chain lands in your own inbox, and you forward it onward yourself.
 """
