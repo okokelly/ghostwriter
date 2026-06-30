@@ -126,15 +126,22 @@ hermes cron create --name "Ghostwriter v4 Digest" \
 
 ## CLI
 
-A small **read-only** helper — it never edits config or sends mail, so the cron
-pipeline doesn't depend on it and `config.yaml` stays the single source of truth.
+Manage contacts and check health. The cron pipeline reads `config.yaml`
+directly and does **not** depend on this CLI — but the write commands rewrite
+`config.yaml` via PyYAML, so manage that file with the CLI *or* by hand, not
+both (comments aren't preserved on a CLI write).
 
 ```bash
 chmod +x ghostwriter        # once; or symlink onto your PATH
-./ghostwriter status        # contacts, sent/failed tallies, dedup + trigger health
+
+./ghostwriter status                                   # tallies, dedup + trigger health
+./ghostwriter add --name work --email me@work.com      # add a Tier 1 address you control
+./ghostwriter edit --name work --signature "<p>Best,</p>"
+./ghostwriter promote --email me@news.com --name news  # = add (e.g. from the digest)
+./ghostwriter remove --name news
 ```
 
-Example output:
+`status` output:
 
 ```
 Contact  Email             Tier  Paused  Sent  Failed  Last sent
@@ -145,7 +152,11 @@ Dedup: 12 message-id(s) tracked in sent_ids.json
 Trigger: none pending
 ```
 
-It's argparse-based, so more read-only views can be added later as subcommands.
+> **Only `add`/`promote` addresses you control.** A Tier 1 contact's reply is
+> auto-sent to that contact's own address — handy for managing several of your
+> own mailboxes, but adding someone else's address means auto-emailing a third
+> party. `add`/`promote`/`remove` confirm first (`--yes` to skip). It's
+> argparse-based, so more subcommands slot in easily.
 
 ## Cost
 

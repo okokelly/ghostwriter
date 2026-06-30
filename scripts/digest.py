@@ -131,7 +131,7 @@ def build_digest_prompt(emails_data):
     sections.append("   - Use emoji for priority (🟢🟡🔴) but keep it clean")
     sections.append("   - Use `---` to separate senders")
     sections.append("")
-    sections.append("4. At the bottom, note: \"Want any of these auto-handled? Add the sender to ~/.ghostwriter/config.yaml as a Tier 1 contact.\"")
+    sections.append("4. At the bottom, note: \"Want any of these auto-handled? `ghostwriter promote --email <email> --name <name>` (only addresses you control).\"")
     sections.append("")
     sections.append("Output the digest now. Be concise — this is a morning scan, not a deep read.")
     sections.append("")

@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 """
-Ghostwriter CLI — a small, read-only operational view over ~/.ghostwriter.
+Ghostwriter CLI — manage contacts in ~/.ghostwriter/config.yaml and read status.
 
 Subcommands:
   status   Per-contact send/fail tallies, pause state, dedup + trigger health.
+  add      Add a Tier 1 contact (an address you control + auto-reply).
+  edit     Change a contact's email / signature / voice guidelines.
+  remove   Delete a contact (and its state file).
+  promote  Add a sender seen in the digest as a Tier 1 contact (= add).
 
-Built to grow: add a command by writing a cmd_<name>(args) function and one
-sub.add_parser(...) line in main(). The cron pipeline (watchdog/processor/
-digest) does NOT depend on this CLI — config.yaml stays the single source of
-truth, so this stays safe to keep read-only.
+Writing commands rewrite config.yaml via PyYAML, so any hand-written comments in
+that file are not preserved — manage it with the CLI *or* by hand, not both.
+The cron pipeline reads config.yaml directly and does not depend on this CLI.
+
+Safety: a Tier 1 contact's auto-drafted reply is always sent to that contact's
+OWN address (the recipient is never taken from an email body). Only add
+addresses you control — otherwise you'd be auto-emailing a third party.
 """
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +37,8 @@ SENT_IDS_FILE = STATE_DIR / "sent_ids.json"
 TRIGGER_FILE = Path("/tmp/ghostwriter_v4_trigger.json")
 
 
+# ── Shared helpers ─────────────────────────────────────────
+
 def _load_json(path, default):
     try:
         with open(path) as f:
@@ -37,13 +47,43 @@ def _load_json(path, default):
         return default
 
 
+def load_config():
+    if not CONFIG_PATH.exists():
+        return {"contacts": []}
+    return yaml.safe_load(CONFIG_PATH.read_text()) or {"contacts": []}
+
+
+def save_config(config):
+    """Atomically rewrite config.yaml (temp file + os.replace)."""
+    GHOSTWRITER_HOME.mkdir(parents=True, exist_ok=True)
+    tmp = CONFIG_PATH.with_suffix(".yaml.tmp")
+    with open(tmp, "w") as f:
+        yaml.safe_dump(config, f, sort_keys=False, default_flow_style=False,
+                       allow_unicode=True)
+    os.replace(tmp, CONFIG_PATH)
+
+
+def find_contact(config, name):
+    for i, c in enumerate(config.get("contacts", [])):
+        if c.get("name") == name:
+            return i, c
+    return -1, None
+
+
+def confirm(prompt, assume_yes):
+    if assume_yes:
+        return True
+    return input(f"{prompt} [y/N] ").strip().lower() == "y"
+
+
+# ── Commands ───────────────────────────────────────────────
+
 def cmd_status(args):
     if not CONFIG_PATH.exists():
         sys.exit(f"ghostwriter: no config at {CONFIG_PATH} — "
                  "copy config.example.yaml there first")
 
-    config = yaml.safe_load(CONFIG_PATH.read_text()) or {}
-    contacts = config.get("contacts", [])
+    contacts = load_config().get("contacts", [])
     if not contacts:
         print("No contacts configured.")
         return
@@ -84,16 +124,130 @@ def cmd_status(args):
         print("Trigger: none pending")
 
 
+def cmd_add(args):
+    if args.tier != 1:
+        sys.exit("ghostwriter: only Tier 1 is managed in v4 — Tier 3 strangers "
+                 "are handled implicitly by the daily digest, with no entry.")
+
+    config = load_config()
+    if find_contact(config, args.name)[1]:
+        sys.exit(f"ghostwriter: contact '{args.name}' already exists — use `edit`.")
+
+    print("Note: a Tier 1 contact receives auto-drafted replies sent to its own")
+    print(f"      address <{args.email}>. Only add addresses you control.")
+    if not confirm(f"Add '{args.name}' <{args.email}> as Tier 1?", args.yes):
+        print("Cancelled.")
+        return
+
+    contact = {"name": args.name, "email": args.email, "tier": 1}
+    if args.signature is not None:
+        contact["signature"] = args.signature
+    if args.voice_guidelines is not None:
+        contact["voice_guidelines"] = args.voice_guidelines
+    contact["paused"] = False
+
+    config.setdefault("contacts", []).append(contact)
+    save_config(config)
+    print(f"✓ Added {args.name} <{args.email}> (Tier 1).")
+
+
+def cmd_edit(args):
+    config = load_config()
+    idx, contact = find_contact(config, args.name)
+    if not contact:
+        sys.exit(f"ghostwriter: contact '{args.name}' not found.")
+
+    changes = []
+    if args.email is not None:
+        contact["email"] = args.email
+        changes.append(f"email → {args.email}")
+    if args.signature is not None:
+        contact["signature"] = args.signature
+        changes.append("signature updated")
+    if args.voice_guidelines is not None:
+        contact["voice_guidelines"] = args.voice_guidelines
+        changes.append("voice_guidelines updated")
+
+    if not changes:
+        sys.exit("ghostwriter: nothing to change — pass --email, --signature, "
+                 "and/or --voice-guidelines.")
+
+    config["contacts"][idx] = contact
+    save_config(config)
+    for ch in changes:
+        print(f"✓ {args.name}: {ch}")
+
+
+def cmd_remove(args):
+    config = load_config()
+    idx, contact = find_contact(config, args.name)
+    if not contact:
+        sys.exit(f"ghostwriter: contact '{args.name}' not found.")
+
+    if not confirm(f"Remove '{args.name}' <{contact.get('email', '')}>?", args.yes):
+        print("Cancelled.")
+        return
+
+    del config["contacts"][idx]
+    save_config(config)
+
+    state_file = STATE_DIR / f"{args.name}.json"
+    if state_file.exists():
+        state_file.unlink()
+    print(f"✓ Removed {args.name}.")
+
+
+def cmd_promote(args):
+    """Convenience wrapper: add a sender (e.g. seen in the digest) as Tier 1."""
+    cmd_add(argparse.Namespace(
+        name=args.name, email=args.email, tier=1,
+        signature=args.signature, voice_guidelines=args.voice_guidelines,
+        yes=args.yes,
+    ))
+
+
+# ── Entry point ────────────────────────────────────────────
+
+def _add_contact_opts(p, name_required=True):
+    p.add_argument("--name", required=name_required, help="Short key for the contact")
+    p.add_argument("--email", required=True, help="Address (one you control)")
+    p.add_argument("--signature", default=None, help="HTML signature appended to replies")
+    p.add_argument("--voice-guidelines", dest="voice_guidelines", default=None,
+                   help="Free-text voice description for the drafter")
+    p.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="ghostwriter",
-        description="Ghostwriter — read-only ops view over ~/.ghostwriter",
+        description="Ghostwriter — manage ~/.ghostwriter contacts and read status",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_status = sub.add_parser(
         "status", help="Show contacts, send/fail tallies, dedup + trigger health")
     p_status.set_defaults(func=cmd_status)
+
+    p_add = sub.add_parser("add", help="Add a Tier 1 contact")
+    p_add.add_argument("--tier", type=int, default=1, help="Tier (only 1 is managed)")
+    _add_contact_opts(p_add)
+    p_add.set_defaults(func=cmd_add)
+
+    p_edit = sub.add_parser("edit", help="Edit a contact's email / signature / voice")
+    p_edit.add_argument("--name", required=True)
+    p_edit.add_argument("--email", default=None)
+    p_edit.add_argument("--signature", default=None)
+    p_edit.add_argument("--voice-guidelines", dest="voice_guidelines", default=None)
+    p_edit.set_defaults(func=cmd_edit)
+
+    p_rm = sub.add_parser("remove", help="Remove a contact")
+    p_rm.add_argument("--name", required=True)
+    p_rm.add_argument("--yes", action="store_true", help="Skip the confirmation prompt")
+    p_rm.set_defaults(func=cmd_remove)
+
+    p_promote = sub.add_parser("promote", help="Add a sender (e.g. from the digest) as Tier 1")
+    _add_contact_opts(p_promote)
+    p_promote.set_defaults(func=cmd_promote)
 
     args = parser.parse_args()
     args.func(args)
