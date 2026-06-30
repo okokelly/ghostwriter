@@ -1,0 +1,21 @@
+# Ghostwriter config — TEMPLATE.
+# Copy this to ~/.ghostwriter/config.yaml and fill in your own details.
+# Your real config.yaml holds personal addresses and is gitignored — never commit it.
+
+contacts:
+  # Tier 1 = you. The processor auto-drafts a reply to any unread mail FROM this
+  # address, and ALWAYS sends the reply back TO this same address (the recipient
+  # is taken from here, never chosen by the LLM). Forwarded chains land in your
+  # own inbox for you to forward onward yourself.
+  - name: me
+    email: you@example.com
+    tier: 1
+    voice: personal
+    # HTML signature appended to every reply. Leave blank for "<p>Cheers,</p>".
+    signature: "<p>Cheers,</p><p>Your Name</p>"
+    voice_guidelines: "Warm, direct, concise. No AI-isms. Contractions OK."
+    paused: false
+
+# Everything NOT listed above is treated as a "stranger" and rolled up into the
+# daily Tier 3 digest (newsletters, cold outreach, etc.) — you don't add those
+# anywhere; leaving them unmanaged is what puts them in the digest.

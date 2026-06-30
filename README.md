@@ -1,160 +1,123 @@
 # Ghostwriter
 
-> Autonomous email management for Hermes Agent — multi-contact auto-reply + daily digest. **$0 idle cost.**
+Autonomous email management for [Hermes Agent](https://github.com). Two things,
+both running as **no-agent cron scripts** so they cost **zero LLM tokens when idle**:
 
-Ghostwriter monitors your inbox, auto-replies to your inner circle in your voice, and gives you a daily digest of everything else. All three cron jobs are pure Python scripts with no LLM agent — the LLM only wakes when there's actual work.
+1. **Tier 1 — auto-reply.** Unread mail from *you* (your own address, configured
+   in `config.yaml`) gets a reply drafted in your voice and sent automatically.
+   The reply is **always sent back to your own configured address** — never to an
+   address picked by the model — so it's safe to forward third-party chains to
+   the agent: the draft lands in *your* inbox for you to forward onward.
+2. **Tier 3 — daily digest.** Everything else (newsletters, cold outreach) is
+   rolled up into one daily summary with priority scoring, delivered to your
+   chat. Your inbox stays quiet.
+
+The LLM only wakes when there's actual work. Empty inbox = both scripts exit
+silently, no tokens spent.
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   GHOSTWRITER v3                     │
-│                                                      │
-│  ┌──────────┐                                        │
-│  │   CLI    │  ghostwriter add/list/pause/digest...  │
-│  │ (Python) │  Manages ~/.ghostwriter/config.yaml    │
-│  └──────────┘                                        │
-│                                                      │
-│  ┌──────────┐  every 5min   ┌──────────────────────┐ │
-│  │ Watchdog │ ── no match ─▶│ Silent ($0)           │ │
-│  │ (script) │               └──────────────────────┘ │
-│  │          │ ── match ────▶ /tmp/trigger.json       │
-│  └──────────┘               └──────────┬───────────┘ │
-│                                        │              │
-│  ┌──────────┐  every 5min+1            │              │
-│  │ Processor│ ◀────────────────────────┘              │
-│  │ (script) │  Tier 1 → draft + send + archive       │
-│  │          │  Tier 2 → draft + notify (v4)          │
-│  └──────────┘                                        │
-│                                                      │
-│  ┌──────────┐  daily 9am                             │
-│  │  Digest  │  Tier 3 → summary + priority → TG      │
-│  │ (script) │                                        │
-│  └──────────┘                                        │
-└─────────────────────────────────────────────────────┘
+Watchdog (every 5 min, no LLM)
+  └─ searches Gmail for unread mail from your Tier 1 address
+  └─ writes /tmp/ghostwriter_v4_trigger.json  (atomic)        ── nothing? exit silently
+
+Processor (every 5 min, +1 offset, no LLM until work exists)
+  └─ claims the trigger (rename-before-spawn → no double-send)
+  └─ for each email:  LLM drafts the reply BODY only
+                      Python appends signature + SENDS to the config address
+                      Python archives the original, records the real result
+
+Digest (daily, no LLM until work exists)
+  └─ summarizes all unread mail NOT from a managed contact → your chat
 ```
 
-## Three tiers
+## Design notes
 
-| Tier | Behavior | Use case |
-|------|----------|----------|
-| **Tier 1** | Fully autonomous: draft + send, zero friction | Your inner circle |
-| **Tier 2** | Draft → notify → approve → send *(v4)* | Important contacts |
-| **Tier 3** | Never auto-reply. Daily digest with priority scoring | Strangers, cold outreach |
+- **The recipient is locked.** Python performs the send using the address from
+  `config.yaml`; the model only writes the reply text. No email body — including
+  a forwarded chain that says *"please send this to bob@x.com"* — can change
+  where a reply goes.
+- **Email bodies are treated as untrusted data.** The drafting prompt explicitly
+  tells the model not to act on instructions found inside an email.
+- **No double-send on crash.** The trigger is claimed (renamed) before the LLM
+  runs, and a `flock` lock prevents overlapping ticks. An email that genuinely
+  fails to send stays unread, so a later tick retries it.
+- **No Tier 2.** A "draft → approve → send to third parties" tier was
+  intentionally not built — locked-to-self delivery already gives the same
+  human-in-the-loop for free (you forward third-party replies yourself).
 
 ## Quick start
 
-### Prerequisites
+### 1. Prerequisites
 
-- [Hermes Agent](https://hermes-agent.nousresearch.com) with Google Workspace configured
-- Python 3.9+ with `pyyaml`
-
-### 1. Install the CLI
+Hermes Agent with Google Workspace configured. Verify the Gmail API works:
 
 ```bash
-cp ghostwriter ~/.local/bin/ghostwriter
-chmod +x ~/.local/bin/ghostwriter
+GAPI="$HOME/.hermes/hermes-agent/venv/bin/python3 $HOME/.hermes/skills/productivity/google-workspace/scripts/google_api.py"
+$GAPI gmail search "is:unread" --max 1
 ```
 
-### 2. Initialize
+### 2. Configure yourself
+
+Copy the template and fill in **your own** address:
 
 ```bash
-ghostwriter init
+mkdir -p ~/.ghostwriter
+cp config.example.yaml ~/.ghostwriter/config.yaml
+$EDITOR ~/.ghostwriter/config.yaml
 ```
 
-### 3. Add a Tier 1 contact
+Your real `config.yaml` holds your address and is gitignored — never commit it.
+See `config.example.yaml` for every field.
+
+### 3. Deploy the scripts
+
+The cron jobs run copies under `~/.hermes/scripts/`. `processor.py` imports
+`send_email.py`, so copy both together:
 
 ```bash
-ghostwriter add --email friend@example.com --name friend --tier 1 --voice personal
+cp scripts/watchdog.py     ~/.hermes/scripts/ghostwriter_v4_watchdog.py
+cp scripts/processor.py    ~/.hermes/scripts/ghostwriter_v4_processor.py
+cp scripts/send_email.py   ~/.hermes/scripts/send_email.py
+cp scripts/digest.py       ~/.hermes/scripts/ghostwriter_v4_digest.py
 ```
 
-### 4. Deploy the cron jobs
+### 4. Create the cron jobs
 
 ```bash
-cp scripts/watchdog.py ~/.hermes/scripts/ghostwriter_watchdog.py
-cp scripts/processor.py ~/.hermes/scripts/ghostwriter_processor.py
-cp scripts/digest.py ~/.hermes/scripts/ghostwriter_digest.py
-
-# Watchdog — scans Gmail every 5 minutes
-hermes cron create \
-  --name "Ghostwriter Watchdog" \
+# Watchdog — poll inbox, zero tokens
+hermes cron create --name "Ghostwriter v4 Watchdog" \
   --schedule "0,5,10,15,20,25,30,35,40,45,50,55 * * * *" \
-  --no-agent true \
-  --script "ghostwriter_watchdog.py"
+  --no-agent true --script "ghostwriter_v4_watchdog.py"
 
-# Processor — drafts and sends Tier 1 replies
-hermes cron create \
-  --name "Ghostwriter Processor" \
+# Processor — drafts + sends, zero tokens unless an email is found.
+# Fires 1 minute after the watchdog so they stay in lockstep.
+hermes cron create --name "Ghostwriter v4 Processor" \
   --schedule "1,6,11,16,21,26,31,36,41,46,51,56 * * * *" \
-  --no-agent true \
-  --script "ghostwriter_processor.py"
+  --no-agent true --script "ghostwriter_v4_processor.py"
 
-# Digest — daily 9am summary of non-VIP emails
-hermes cron create \
-  --name "Ghostwriter Digest" \
+# Digest — once a day (adjust the hour to your timezone)
+hermes cron create --name "Ghostwriter v4 Digest" \
   --schedule "0 9 * * *" \
-  --no-agent true \
-  --script "ghostwriter_digest.py" \
-  --deliver origin
+  --no-agent true --script "ghostwriter_v4_digest.py"
 ```
-
-That's it. Your Tier 1 contacts get auto-replies in your voice. You get a digest every morning. Zero cost when nothing's happening.
-
-## CLI reference
-
-```bash
-# Contact management
-ghostwriter add --email <e> --name <n> --tier <1|2> [--voice personal|professional]
-ghostwriter list                           # Table view
-ghostwriter show <name>                    # Full details + stats
-ghostwriter edit <name> --tier 2           # Change tier
-ghostwriter pause <name>                   # Skip in cron ticks
-ghostwriter resume <name>
-ghostwriter remove <name>
-
-# Tier 3 digest
-ghostwriter digest                          # Manual trigger
-ghostwriter promote --email <e> --name <n> --tier 1  # Promote from digest
-
-# Overview
-ghostwriter stats
-```
-
-## Voice presets
-
-| Preset | Tone | Signature |
-|--------|------|-----------|
-| `personal` | Warm, direct, casual | `Cheers,\nName` |
-| `professional` | Polished but not stiff | `Best regards,\nName` |
-
-Custom signatures supported via `--signature`.
-
-## Architecture
-
-All three cron scripts are `no_agent=true` — **$0 LLM tokens on empty ticks**.
-
-| Script | What it does | When |
-|--------|-------------|------|
-| `watchdog.py` | Reads config, searches Gmail for Tier 1+2 emails, writes trigger file | Every 5 min |
-| `processor.py` | Reads trigger, Tier 1 → `hermes chat -q` → draft + send + archive | Every 5 min +1 |
-| `digest.py` | Excludes managed contacts, LLM batch summarizes rest, pushes to Telegram | Daily 9am |
-
-Data lives in `~/.ghostwriter/config.yaml` (source of truth) and `~/.ghostwriter/state/*.json` (per-contact stats).
-
-## What NOT to do
-
-- Don't wrap processor/digest in an LLM agent cron job — they're `no_agent=true` scripts. The $0-idle property depends on this.
-- Don't use `gmail reply` — plain text mangles in Outlook. Always `gmail send --html --thread-id`.
-- Don't combine `gmail modify` labels — one `--remove-labels` per call.
 
 ## Files
 
-| File | Role |
+| File | What |
 |------|------|
-| `ghostwriter` | CLI entry point |
-| `scripts/watchdog.py` | Multi-tenant Gmail poller |
-| `scripts/processor.py` | Tier 1 auto-reply engine |
-| `scripts/digest.py` | Tier 3 daily digest |
-| `SKILL.md` | Hermes skill definition |
-| `references/` | Voice templates and standing rules |
+| `scripts/watchdog.py`   | Polls Gmail for Tier 1 unread mail, writes the trigger |
+| `scripts/processor.py`  | LLM drafts the reply; Python sends to the config address + archives |
+| `scripts/send_email.py` | Shared Gmail send / archive helper (locked recipient) |
+| `scripts/digest.py`     | Daily Tier 3 digest of unmanaged senders |
+| `config.example.yaml`   | Config template — copy to `~/.ghostwriter/config.yaml` |
+| `SKILL.md`              | Hermes skill definition |
+| `references/`           | Voice / format reference notes |
+
+## Cost
+
+When the inbox is empty, every script is pure Python and exits without touching
+an LLM — **$0/day idle**. The model is invoked only to draft a reply or build a
+digest, i.e. only when there is real work.
 
 ## License
 

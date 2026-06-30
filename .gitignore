@@ -1,17 +1,20 @@
-# macOS
-.DS_Store
-.AppleDouble
-.LSOverride
-._*
+# Personal config — never commit (contains your real email addresses)
+config.yaml
+.ghostwriter/
+
+# Internal dev note — real account emails, cron job IDs, Telegram setup.
+# Kept local, never published.
+HANDOVER.md
 
 # Python
 __pycache__/
 *.py[cod]
-*.egg-info/
 .venv/
 venv/
 
-# Temp files
+# macOS
+.DS_Store
+
+# Runtime / scratch
 *.tmp
-*.swp
-*~
+*.processing.json

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Ghostwriter v3 Digest — Tier 3 daily digest of non-VIP emails.
+Ghostwriter v4 Digest — Tier 3 daily digest of non-VIP emails.
 Searches Gmail for unread emails NOT from Tier 1/2 contacts,
 batches them to LLM for summary + priority scoring,
 delivers formatted digest to Telegram.
@@ -28,9 +28,14 @@ GAPI = " ".join([
 
 MAX_EMAILS = 30  # Max emails to include in a digest batch
 
+# Explicit sentinels we control — the LLM wraps its final digest between these.
+# Robust to hermes CLI rendering changes (no longer parses on a decorative char).
+DIGEST_START = "<<<GHOSTWRITER_DIGEST_START>>>"
+DIGEST_END = "<<<GHOSTWRITER_DIGEST_END>>>"
+
 
 def load_excluded_emails():
-    """Return set of emails to exclude (all Tier 1 + Tier 2 contacts, not paused)."""
+    """Return set of emails to exclude from the digest (managed Tier 1 contacts)."""
     if not CONFIG_PATH.exists():
         return set()
 
@@ -38,8 +43,9 @@ def load_excluded_emails():
         config = yaml.safe_load(f) or {}
 
     contacts = config.get("contacts", [])
-    # Exclude Tier 1 and Tier 2 contacts (even paused — to be safe)
-    return {c["email"].lower() for c in contacts if c.get("tier") in (1, 2)}
+    # Exclude managed (Tier 1) contacts so the user's own / forwarded mail
+    # doesn't show up in the stranger digest. (Tier 2 was removed.)
+    return {c["email"].lower() for c in contacts if c.get("tier") == 1}
 
 
 def build_query(excluded):
@@ -93,7 +99,7 @@ def build_digest_prompt(emails_data):
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     sections = []
-    sections.append(f"You are the Ghostwriter Digest Agent. Generate a daily email digest for the user.")
+    sections.append("You are the Ghostwriter Digest Agent. Generate a daily email digest for the user.")
     sections.append(f"Current time: {now}")
     sections.append("")
     sections.append(f"## Inbox Snapshot: {len(emails_data)} unread emails from unknown senders")
@@ -127,6 +133,12 @@ def build_digest_prompt(emails_data):
     sections.append("4. At the bottom, note: \"Reply to any? `ghostwriter promote --email <email> --name <name> --tier 1` to add them.\"")
     sections.append("")
     sections.append("Output the digest now. Be concise — this is a morning scan, not a deep read.")
+    sections.append("")
+    sections.append(
+        "IMPORTANT: Wrap ONLY the final digest between the exact markers "
+        f"{DIGEST_START} and {DIGEST_END}, each on its own line. "
+        "Put nothing else between them."
+    )
 
     return "\n".join(sections)
 
@@ -158,15 +170,25 @@ def main():
         capture_output=True, text=True, timeout=300,
     )
 
-    # Output the digest (cron delivers this to Telegram)
-    # hermes chat -q echoes the prompt before the response.
-    # Strip everything before the formatted output marker.
-    output = result.stdout or ""
-    marker = "╭─"
-    if marker in output:
-        output = output[output.index(marker):]
+    # Output the digest (cron delivers this to Telegram).
+    # Extract only what the LLM wrapped between our explicit sentinels.
+    # Fallback: if sentinels are missing (e.g. LLM ignored them), deliver the
+    # full output and warn — never silently send an empty digest.
+    raw = result.stdout or ""
+    start = raw.find(DIGEST_START)
+    end = raw.find(DIGEST_END)
+    if start != -1 and end != -1 and end > start:
+        output = raw[start + len(DIGEST_START):end].strip()
+    else:
+        output = raw.strip()
+        print(
+            "WARNING: digest sentinels not found in LLM output; "
+            "delivering full output as fallback.",
+            file=sys.stderr,
+        )
+
     if output:
-        print(output.strip())
+        print(output)
     if result.stderr:
         print(result.stderr, file=sys.stderr)
 

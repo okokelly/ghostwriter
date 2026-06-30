@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Ghostwriter v3 Watchdog — multi-tenant email polling.
+Ghostwriter v4 Watchdog — multi-tenant email polling.
 Reads ~/.ghostwriter/config.yaml, searches Gmail for all Tier 1 contacts,
 writes trigger file when unread emails found.
 
 Zero-token: no_agent=true cron job. Pure Python, no LLM.
-v3: multi-contact from config.yaml (replaces v2's single VIP hardcode).
+v4: multi-contact from config.yaml (replaces v2's single VIP hardcode).
 """
 
 import json
@@ -19,7 +19,7 @@ from pathlib import Path
 # ── Paths ─────────────────────────────────────────────────
 GHOSTWRITER_HOME = Path.home() / ".ghostwriter"
 CONFIG_PATH = GHOSTWRITER_HOME / "config.yaml"
-TRIGGER_FILE = Path("/tmp/ghostwriter_v3_trigger.json")
+TRIGGER_FILE = Path("/tmp/ghostwriter_v4_trigger.json")
 
 GAPI = " ".join([
     str(Path.home() / ".hermes/hermes-agent/venv/bin/python3"),
@@ -98,7 +98,7 @@ def main():
                     "contact_email": contact["email"],
                     "tier": contact["tier"],
                     "voice_guidelines": contact.get("voice_guidelines", ""),
-                    "signature": contact.get("signature", "<p>Cheers,</p><p>Name</p>"),
+                    "signature": contact.get("signature", ""),
                 })
             else:
                 # Partial info — at least record we saw it
@@ -110,7 +110,7 @@ def main():
                     "contact_email": contact["email"],
                     "tier": contact["tier"],
                     "voice_guidelines": contact.get("voice_guidelines", ""),
-                    "signature": contact.get("signature", "<p>Cheers,</p><p>Name</p>"),
+                    "signature": contact.get("signature", ""),
                 })
 
     if not all_emails:
@@ -122,8 +122,15 @@ def main():
         "emails": all_emails,
     }
 
-    with open(TRIGGER_FILE, "w") as f:
+    # Atomic write: dump to a temp file in the same dir, then os.replace().
+    # os.replace is atomic on POSIX, so the processor never sees a
+    # half-written trigger (which would crash its JSON parse).
+    tmp_path = TRIGGER_FILE.with_suffix(TRIGGER_FILE.suffix + ".tmp")
+    with open(tmp_path, "w") as f:
         json.dump(trigger, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, TRIGGER_FILE)
 
     # Also dump to stdout for cron logging
     print(json.dumps(trigger, indent=2))
