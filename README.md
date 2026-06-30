@@ -119,9 +119,33 @@ hermes cron create --name "Ghostwriter v4 Digest" \
 | `scripts/processor.py`  | LLM drafts the reply; Python sends to the config address + archives |
 | `scripts/send_email.py` | Shared Gmail send / archive helper (locked recipient) |
 | `scripts/digest.py`     | Daily Tier 3 digest of unmanaged senders |
+| `ghostwriter`           | Read-only CLI (`status`) — see below |
 | `config.example.yaml`   | Config template — copy to `~/.ghostwriter/config.yaml` |
 | `SKILL.md`              | Hermes skill definition |
 | `references/`           | Voice / format reference notes |
+
+## CLI
+
+A small **read-only** helper — it never edits config or sends mail, so the cron
+pipeline doesn't depend on it and `config.yaml` stays the single source of truth.
+
+```bash
+chmod +x ghostwriter        # once; or symlink onto your PATH
+./ghostwriter status        # contacts, sent/failed tallies, dedup + trigger health
+```
+
+Example output:
+
+```
+Contact  Email             Tier  Paused  Sent  Failed  Last sent
+-------  ----------------  ----  ------  ----  ------  -------------------------
+me       you@example.com   1     no      12    1       2026-06-30T09:01:22+00:00
+
+Dedup: 12 message-id(s) tracked in sent_ids.json
+Trigger: none pending
+```
+
+It's argparse-based, so more read-only views can be added later as subcommands.
 
 ## Cost
 

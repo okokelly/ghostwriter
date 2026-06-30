@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""
+Ghostwriter CLI — a small, read-only operational view over ~/.ghostwriter.
+
+Subcommands:
+  status   Per-contact send/fail tallies, pause state, dedup + trigger health.
+
+Built to grow: add a command by writing a cmd_<name>(args) function and one
+sub.add_parser(...) line in main(). The cron pipeline (watchdog/processor/
+digest) does NOT depend on this CLI — config.yaml stays the single source of
+truth, so this stays safe to keep read-only.
+"""
+
+import argparse
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    sys.exit("ghostwriter: PyYAML not installed (pip install pyyaml)")
+
+GHOSTWRITER_HOME = Path.home() / ".ghostwriter"
+CONFIG_PATH = GHOSTWRITER_HOME / "config.yaml"
+STATE_DIR = GHOSTWRITER_HOME / "state"
+SENT_IDS_FILE = STATE_DIR / "sent_ids.json"
+TRIGGER_FILE = Path("/tmp/ghostwriter_v4_trigger.json")
+
+
+def _load_json(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def cmd_status(args):
+    if not CONFIG_PATH.exists():
+        sys.exit(f"ghostwriter: no config at {CONFIG_PATH} — "
+                 "copy config.example.yaml there first")
+
+    config = yaml.safe_load(CONFIG_PATH.read_text()) or {}
+    contacts = config.get("contacts", [])
+    if not contacts:
+        print("No contacts configured.")
+        return
+
+    rows = []
+    for c in contacts:
+        name = c.get("name", "?")
+        state = _load_json(STATE_DIR / f"{name}.json", {})
+        rows.append({
+            "name": name,
+            "email": c.get("email", ""),
+            "tier": str(c.get("tier", "")),
+            "paused": "yes" if c.get("paused") else "no",
+            "sent": str(state.get("total_sent", 0)),
+            "failed": str(state.get("total_failed", 0)),
+            "last_sent": state.get("last_sent", "—"),
+        })
+
+    cols = [("name", "Contact"), ("email", "Email"), ("tier", "Tier"),
+            ("paused", "Paused"), ("sent", "Sent"), ("failed", "Failed"),
+            ("last_sent", "Last sent")]
+    headers = dict(cols)
+    widths = {k: max(len(h), *(len(r[k]) for r in rows)) for k, h in cols}
+    line = lambda get: "  ".join(get(k).ljust(widths[k]) for k, _ in cols)
+
+    print(f"Ghostwriter status — {GHOSTWRITER_HOME}\n")
+    print(line(lambda k: headers[k]))
+    print(line(lambda k: "-" * widths[k]))
+    for r in rows:
+        print(line(lambda k: r[k]))
+
+    sent_ids = _load_json(SENT_IDS_FILE, {})
+    print(f"\nDedup: {len(sent_ids)} message-id(s) tracked in sent_ids.json")
+    if TRIGGER_FILE.exists():
+        mtime = datetime.fromtimestamp(TRIGGER_FILE.stat().st_mtime, tz=timezone.utc)
+        print(f"Trigger: pending (written {mtime.isoformat()})")
+    else:
+        print("Trigger: none pending")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="ghostwriter",
+        description="Ghostwriter — read-only ops view over ~/.ghostwriter",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_status = sub.add_parser(
+        "status", help="Show contacts, send/fail tallies, dedup + trigger health")
+    p_status.set_defaults(func=cmd_status)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

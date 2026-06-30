@@ -1,7 +1,7 @@
 ---
 name: ghostwriter
 description: Autonomous email management — zero-token watchdog/processor/digest cron pipeline. Tier 1 auto-replies to your own configured address (recipient locked); Tier 3 gives a daily digest of everyone else.
-version: 4.0.1
+version: 4.1.0
 category: email
 ---
 
@@ -89,8 +89,17 @@ digest. All exit silently with zero tokens when there is nothing to do.
 | `scripts/processor.py` | Drafts via LLM, sends via Python to the config address |
 | `scripts/send_email.py` | Shared Gmail send / archive helper (locked recipient) |
 | `scripts/digest.py` | Daily Tier 3 digest |
+| `ghostwriter` | Read-only CLI (`status`); does not drive the pipeline |
 | `config.example.yaml` | Config template |
 | `references/` | Voice / format reference notes |
+
+## CLI
+
+`./ghostwriter status` — a read-only health view (it never edits config or sends
+mail; `config.yaml` stays the source of truth). Shows each contact's
+sent/failed tallies, pause state, last-sent time, the dedup count, and whether a
+trigger is pending. Built on argparse subcommands so more read-only views can be
+added later as `cmd_<name>` functions.
 
 ## Pitfalls
 
@@ -100,6 +109,9 @@ digest. All exit silently with zero tokens when there is nothing to do.
 - **Deploy `send_email.py` alongside `processor.py`** — the processor imports it.
 
 ## Changelog
+
+**v4.1.0** — Added a small read-only `ghostwriter status` CLI (contacts,
+send/fail tallies, dedup + trigger health). argparse-based so it can grow.
 
 **v4.0.1** — Closed the re-enqueue double-reply window with message-id dedup
 (`state/sent_ids.json`), recorded the instant a send succeeds. Watchdog/digest
